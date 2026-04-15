@@ -1,0 +1,127 @@
+#include <ESP8266WiFi.h>
+#include <ESP8266WebServer.h>
+
+const int ledPins[] = {2, 12, 13};
+const int numLeds = 3;
+const int buttonPin = 0;
+
+const int baseInterval = 300;
+const int stepIncrement = 200;
+const int totalSteps = 15;
+
+int currentInterval = baseInterval;
+unsigned long lastBlinkTime = 0;
+int stepCounter = 0;
+int currentLed = 0;
+
+bool isPaused = true;
+volatile bool buttonPressed = false; 
+unsigned long lastIsrTime = 0;
+
+ESP8266WebServer server(80);
+
+const char* htmlPage = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Lab 1 - Volodia Vus</title>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; text-align: center; background-color: #2c3e50; color: white; padding-top: 50px; }
+        .btn { padding: 20px 40px; font-size: 24px; cursor: pointer; background-color: #e74c3c; color: white; border: none; border-radius: 50px; transition: 0.3s; }
+        .btn:hover { background-color: #c0392b; }
+        .info { margin-top: 30px; background: #34495e; display: inline-block; padding: 20px; border-radius: 15px; }
+    </style>
+</head>
+<body>
+    <h1>Laboratory Work #1</h1>
+    <div class="info">
+        <p>Student: <b>Volodia Vus</b></p>
+        <p>Option 7: Gradual Slowdown</p>
+        <p id="stat">Status: Waiting</p>
+    </div><br><br>
+    <button class="btn" onclick="location.href='/toggle'">START ALGORITHM</button>
+    <script>
+        setInterval(function() {
+            fetch('/state').then(r => r.text()).then(t => document.getElementById('stat').innerText = "Status: " + t);
+        }, 300);
+    </script>
+</body>
+</html>
+)rawliteral";
+
+void ICACHE_RAM_ATTR handleButtonInterrupt() {
+    unsigned long now = millis();
+    if (now - lastIsrTime > 250) { 
+        buttonPressed = true;
+        lastIsrTime = now;
+    }
+}
+
+void handleRoot() { server.send(200, "text/html", htmlPage); }
+void handleToggle() { isPaused = false; server.sendHeader("Location", "/"); server.send(303); }
+void handleState() { 
+    if (isPaused) server.send(200, "text/plain", "Stopped");
+    else server.send(200, "text/plain", "Slowing down (" + String(currentInterval) + "ms)");
+}
+
+void executeLedAlgorithm() {
+    if (!isPaused) {
+        if (millis() - lastBlinkTime >= currentInterval) {
+            lastBlinkTime = millis();
+
+            for (int i = 0; i < numLeds; i++) digitalWrite(ledPins[i], LOW);
+
+            digitalWrite(ledPins[currentLed], HIGH);
+            
+            Serial.print("Step: "); Serial.print(stepCounter + 1);
+            Serial.print(" | Delay: "); Serial.println(currentInterval);
+
+            currentInterval += stepIncrement;
+            stepCounter++;
+
+            currentLed = (currentLed + 1) % numLeds;
+
+            if (stepCounter >= totalSteps) {
+                delay(currentInterval);
+                digitalWrite(ledPins[(currentLed-1+numLeds)%numLeds], LOW);
+                
+                isPaused = true;
+                stepCounter = 0;
+                currentLed = 0;
+                currentInterval = baseInterval;
+                Serial.println("--- ALGORITHM FINISHED ---");
+            }
+        }
+    }
+}
+
+void setup() {
+    Serial.begin(115200);
+    for (int i = 0; i < numLeds; i++) {
+        pinMode(ledPins[i], OUTPUT);
+        digitalWrite(ledPins[i], LOW);
+    }
+    pinMode(buttonPin, INPUT_PULLUP);
+    attachInterrupt(digitalPinToInterrupt(buttonPin), handleButtonInterrupt, FALLING);
+
+    WiFi.softAP("ESP8266_Lab1_Vus", "12345678");
+    server.on("/", handleRoot);
+    server.on("/toggle", handleToggle);
+    server.on("/state", handleState);
+    server.begin();
+}
+
+void loop() {
+    server.handleClient();
+    if (buttonPressed) {
+        buttonPressed = false;
+        if (isPaused) {
+            isPaused = false;
+            stepCounter = 0;
+            currentLed = 0;
+            currentInterval = baseInterval;
+        }
+    }
+    executeLedAlgorithm();
+}
